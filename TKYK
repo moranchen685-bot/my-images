@@ -1,1 +1,160 @@
+```html
+<div style="margin: 10px 0; border-radius: 12px; overflow: hidden; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+    <div id="st_{{RAND}}" style="padding: 10px; color: #888; font-size: 12px; text-align: center;">🎨 正在检索GitHub图库...</div>
+    < img id="img_{{RAND}}" style="width: 100%; display: none;" onerror="this.style.border='2px solid red';" />
+</div>
 
+<script>
+(async function(){
+    var uid = "{{RAND}}";
+    var promptHash = btoa(encodeURIComponent("$1")).substring(0, 16).replace(/[^a-zA-Z0-9]/g, '');
+    var img = document.getElementById('img_' + uid);
+    var status = document.getElementById('st_' + uid);
+
+    // ========== 【配置区域】需要替换以下4个参数 ==========
+    var GITHUB_TOKEN = '你的GitHub-Token';          // 在 https://github.com/settings/tokens 创建，需要repo权限
+    var REPO_OWNER = '你的GitHub用户名';             // 例如：wudi438
+    var REPO_NAME = '你的仓库名';                    // 例如：tuku
+    var BRANCH = 'main';                            // 分支名，通常是 main 或 master
+    
+    var IMAGE_API_URL = '你的生图API地址';           // 例如：https://api.mmkg.cloud/v1/chat/completions
+    var IMAGE_API_KEY = '你的生图API密钥';           // 例如：sk-xxxxx
+    var IMAGE_MODEL = '你的生图模型名';              // 例如：0.5-兼容-官方-grok-4-image生图
+    // =====================================================
+
+    // 检查图片是否存在
+    async function checkImageExists() {
+        try {
+            var rawUrl = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + BRANCH + '/images/' + promptHash + '.png';
+            
+            var rawCheck = await fetch(rawUrl, { method: 'HEAD' });
+            
+            if (rawCheck.ok) {
+                return rawUrl;
+            }
+            
+            return null;
+        } catch(e) {
+            console.error('检查失败：', e);
+            return null;
+        }
+    }
+
+    // 【步骤1】检查GitHub缓存
+    status.textContent = '🔍 检查GitHub缓存...';
+    var existingUrl = await checkImageExists();
+    
+    if (existingUrl) {
+        status.textContent = '✅ 找到缓存';
+        status.style.background = '#d4edda';
+        status.style.color = '#155724';
+        
+        img.src = existingUrl;
+        img.onload = function() {
+            img.style.display = 'block';
+            setTimeout(function(){ status.style.display = 'none'; }, 2000);
+        };
+        img.onerror = function() {
+            status.textContent = '⚠️ 图片加载失败，重新生成...';
+            status.style.background = '#fff3cd';
+            deleteAndRegenerate();
+        };
+        
+        return;
+    }
+
+    // 【步骤2】生成新图
+    generateNewImage();
+
+    async function generateNewImage() {
+        status.textContent = "🌸 首次生成中...";
+        
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', IMAGE_API_URL, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.setRequestHeader('Authorization', 'Bearer ' + IMAGE_API_KEY);
+
+        xhr.onload = async function(){
+            if(xhr.status === 200 || xhr.status === 201){
+                try {
+                    var data = JSON.parse(xhr.responseText);
+                    var content = data.choices[0].message.content;
+                    
+                    var base64Match = content.match(/[A-Za-z0-9+/=]{1000,}/);
+                    
+                    if(!base64Match) {
+                        throw new Error('未找到base64数据');
+                    }
+                    
+                    var base64Data = base64Match[0].replace(/[^A-Za-z0-9+/=]/g, '');
+                    
+                    // 验证base64完整性
+                    var padding = base64Data.length % 4;
+                    if (padding > 0) {
+                        base64Data += '='.repeat(4 - padding);
+                    }
+                    
+                    var tempSrc = 'data:image/png;base64,' + base64Data;
+                    
+                    img.src = tempSrc;
+                    img.style.display = 'block';
+                    
+                    status.textContent = '☁️ 上传GitHub...';
+                    status.style.background = '#fff3cd';
+                    
+                    try {
+                        var fileName = 'images/' + promptHash + '.png';
+                        
+                        var uploadResp = await fetch(
+                            'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + fileName,
+                            {
+                                method: 'PUT',
+                                headers: {
+                                    'Authorization': 'token ' + GITHUB_TOKEN,
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    message: 'Add ' + promptHash,
+                                    content: base64Data,
+                                    branch: BRANCH
+                                })
+                            }
+                        );
+                        
+                        var uploadData = await uploadResp.json();
+                        
+                        if (uploadResp.ok) {
+                            var githubRawUrl = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + BRANCH + '/' + fileName;
+                            
+                            await new Promise(resolve => setTimeout(resolve, 2000));
+                            
+                            img.src = githubRawUrl;
+                            
+                            status.textContent = '✅ 永久保存（' + promptHash + '.png）';
+                            status.style.background = '#d4edda';
+                            status.style.color = '#155724';
+                            
+                            setTimeout(function(){ status.style.display = 'none'; }, 4000);
+                            
+                            cleanOldImages();
+                            
+                        } else if (uploadResp.status === 422 && uploadData.message && uploadData.message.includes('already exists')) {
+                            status.textContent = '✅ 文件已存在';
+                            status.style.background = '#d4edda';
+                            setTimeout(function(){ status.style.display = 'none'; }, 3000);
+                        } else {
+                            throw new Error('上传失败: ' + uploadResp.status);
+                        }
+                        
+                    } catch(uploadErr) {
+                        status.textContent = '⚠️ 上传失败（仅本次显示）';
+                        status.style.background = '#f8d7da';
+                        console.error('上传错误：', uploadErr);
+                        setTimeout(function(){ status.style.display = 'none'; }, 5000);
+                    }
+                } catch(e) { 
+                    status.textContent = '❌ 解析失败：' + e.message; 
+                    console.error('解析错误：', e);
+                }
+            } else if (xhr.status === 429) {
+               
